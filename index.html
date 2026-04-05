@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Stickman Go-Kart</title>
+<link href="https://fonts.googleapis.com/css2?family=Azeret+Mono:wght@400;600;700;900&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden;background:#111827;font-family:'Plus Jakarta Sans',sans-serif;color:#e5e7eb}
+#app{width:100%;height:100%;display:flex;align-items:center;justify-content:center;position:relative}
+#lobby{display:flex;flex-direction:column;align-items:center;gap:20px;padding:40px;max-width:420px;width:90%}
+#lobby h1{font-family:'Azeret Mono',monospace;font-size:28px;font-weight:900;letter-spacing:-1px;text-transform:uppercase;color:#fff}
+#lobby h1 span{color:#f59e0b}
+.lobby-subtitle{font-size:14px;color:#6b7280;margin-top:-12px}
+.btn{padding:12px 28px;border:none;border-radius:6px;font-family:'Plus Jakarta Sans',sans-serif;font-size:15px;font-weight:600;cursor:pointer;transition:all .15s}
+.btn-primary{background:#f59e0b;color:#111827}.btn-primary:hover{background:#d97706}
+.btn-secondary{background:rgba(255,255,255,.08);color:#e5e7eb;border:1px solid rgba(255,255,255,.12)}.btn-secondary:hover{background:rgba(255,255,255,.14)}
+.btn-small{padding:8px 18px;font-size:13px}
+.input{padding:12px 16px;border:1px solid rgba(255,255,255,.15);border-radius:6px;background:rgba(255,255,255,.06);color:#fff;font-family:'Azeret Mono',monospace;font-size:18px;text-align:center;letter-spacing:6px;text-transform:uppercase;width:180px}
+.input::placeholder{letter-spacing:2px;font-size:13px;color:#555}
+.input:focus{outline:none;border-color:#f59e0b}
+.lobby-or{color:#555;font-size:13px}
+.room-code-display{font-family:'Azeret Mono',monospace;font-size:42px;font-weight:900;color:#f59e0b;letter-spacing:8px}
+.player-list{display:flex;gap:12px;flex-wrap:wrap;justify-content:center}
+.player-chip{display:flex;align-items:center;gap:8px;padding:8px 16px;border-radius:20px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);font-size:14px;font-weight:600}
+.player-dot{width:12px;height:12px;border-radius:50%}
+.error-msg{color:#ef4444;font-size:13px;min-height:18px}
+#waiting-msg{color:#6b7280;font-size:13px}
+#game-container{display:none;width:100%;height:100%;position:relative}
+canvas{display:block;width:100%;height:100%}
+#hud{position:fixed;top:0;left:0;right:0;pointer-events:none;z-index:10;padding:12px 16px;display:flex;justify-content:space-between;align-items:flex-start}
+.hud-left,.hud-right{display:flex;flex-direction:column;gap:4px}
+.hud-lap{font-family:'Azeret Mono',monospace;font-size:16px;font-weight:700;color:#fff;text-shadow:0 1px 4px rgba(0,0,0,.8)}
+.hud-time{font-family:'Azeret Mono',monospace;font-size:14px;font-weight:600;color:#9ca3af;text-shadow:0 1px 4px rgba(0,0,0,.8)}
+.hud-speed{font-family:'Azeret Mono',monospace;font-size:13px;font-weight:600;color:#6ee7b7;text-shadow:0 1px 4px rgba(0,0,0,.8)}
+.hud-pos{font-family:'Azeret Mono',monospace;font-size:13px;font-weight:600;text-shadow:0 1px 4px rgba(0,0,0,.8)}
+#countdown-overlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;z-index:20;background:rgba(0,0,0,.5)}
+#countdown-number{font-family:'Azeret Mono',monospace;font-size:120px;font-weight:900;color:#f59e0b;text-shadow:0 0 40px rgba(245,158,11,.4)}
+#results-overlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;z-index:20;background:rgba(0,0,0,.75);flex-direction:column;gap:20px}
+#results-overlay h2{font-family:'Azeret Mono',monospace;font-size:32px;font-weight:900;color:#fff}
+.results-list{display:flex;flex-direction:column;gap:10px}
+.result-row{display:flex;align-items:center;gap:12px;font-family:'Azeret Mono',monospace;font-size:16px;font-weight:600}
+.result-pos{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:#111827}
+#touch-controls{position:fixed;bottom:0;left:0;right:0;pointer-events:none;z-index:15;display:none;padding:20px;justify-content:space-between;align-items:flex-end}
+.touch-btn{pointer-events:auto;width:64px;height:64px;border-radius:50%;background:rgba(255,255,255,.12);border:2px solid rgba(255,255,255,.2);display:flex;align-items:center;justify-content:center;font-size:24px;color:#fff;user-select:none;-webkit-user-select:none;touch-action:manipulation}
+.touch-btn:active,.touch-btn.pressed{background:rgba(255,255,255,.3)}
+.touch-group{display:flex;gap:10px}
+.touch-pedals{display:flex;flex-direction:column;gap:10px}
+.controls-hint{font-size:11px;color:#4b5563;text-align:center;margin-top:4px}
+#connecting-msg{color:#f59e0b;font-size:13px;min-height:18px}
+</style>
+</head>
+<body>
+<div id="app">
+
+<div id="lobby">
+  <h1>Stickman <span>Go-Kart</span></h1>
+  <p class="lobby-subtitle">up to 4 players — online multiplayer</p>
+
+  <div id="lobby-menu" style="display:flex;flex-direction:column;align-items:center;gap:14px">
+    <div id="connecting-msg">Connecting to server...</div>
+    <button class="btn btn-primary" id="btn-create" disabled>Create Room</button>
+    <span class="lobby-or">or join with code</span>
+    <div style="display:flex;gap:8px;align-items:center">
+      <input class="input" id="join-code" placeholder="CODE" maxlength="4">
+      <button class="btn btn-secondary btn-small" id="btn-join" disabled>Join</button>
+    </div>
+    <div class="error-msg" id="error-msg"></div>
+    <p class="controls-hint">WASD or Arrow Keys to drive</p>
+  </div>
+
+  <div id="lobby-room" style="display:none;flex-direction:column;align-items:center;gap:16px">
+    <p style="font-size:13px;color:#6b7280">Share this code with your opponents:</p>
+    <div class="room-code-display" id="room-code-display"></div>
+    <div class="player-list" id="player-list"></div>
+    <p id="waiting-msg">Waiting for players...</p>
+    <button class="btn btn-primary" id="start-btn" style="display:none">Start Race</button>
+  </div>
+</div>
+
+<div id="game-container">
+  <canvas id="gameCanvas"></canvas>
+  <div id="hud">
+    <div class="hud-left">
+      <div class="hud-lap" id="hud-lap">LAP 1/3</div>
+      <div class="hud-time" id="hud-time">0.0s</div>
+      <div class="hud-speed" id="hud-speed">0 km/h</div>
+    </div>
+    <div class="hud-right" id="hud-positions"></div>
+  </div>
+  <div id="countdown-overlay"><div id="countdown-number"></div></div>
+  <div id="results-overlay">
+    <h2>RACE OVER</h2>
+    <div class="results-list" id="results-list"></div>
+    <button class="btn btn-primary" id="btn-restart">Race Again</button>
+  </div>
+  <div id="touch-controls">
+    <div class="touch-group">
+      <button class="touch-btn" data-key="left">&#x25C0;</button>
+      <button class="touch-btn" data-key="right">&#x25B6;</button>
+    </div>
+    <div class="touch-pedals">
+      <button class="touch-btn" data-key="up">&#x25B2;</button>
+      <button class="touch-btn" data-key="down">&#x25BC;</button>
+    </div>
+  </div>
+</div>
+
+</div>
+
+<script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+<script>
+// ══════════════════════════════════════════════
+// SERVER URL — update this after Railway deploy
+// ══════════════════════════════════════════════
+const SERVER_URL = "https://gokart-server-production.up.railway.app";
+
+let socket = null;
+let myIndex = -1, myColor = "", myName = "", roomCode = "", isHost = false;
+let gameState = null, raceActive = false;
+
+const TRACK_W = 1600, TRACK_H = 900;
+const TRACK_CX = 800, TRACK_CY = 450;
+const OUTER_RX = 650, OUTER_RY = 350;
+const INNER_RX = 400, INNER_RY = 170;
+
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+
+// ── Connect ──
+socket = io(SERVER_URL);
+
+socket.on("connect", () => {
+  console.log("Connected:", socket.id);
+  document.getElementById("connecting-msg").textContent = "";
+  document.getElementById("btn-create").disabled = false;
+  document.getElementById("btn-join").disabled = false;
+});
+
+socket.on("connect_error", (err) => {
+  console.error("Connection error:", err.message);
+  document.getElementById("connecting-msg").textContent = "Connecting to server...";
+  document.getElementById("btn-create").disabled = true;
+  document.getElementById("btn-join").disabled = true;
+});
+
+// ── UI ──
+document.getElementById("btn-create").addEventListener("click", doCreate);
+document.getElementById("btn-join").addEventListener("click", doJoin);
+document.getElementById("start-btn").addEventListener("click", () => socket.emit("start_race"));
+document.getElementById("btn-restart").addEventListener("click", () => socket.emit("restart_race"));
+document.getElementById("join-code").addEventListener("keydown", (e) => { if (e.key === "Enter") doJoin(); });
+
+document.querySelectorAll(".touch-btn").forEach(btn => {
+  const key = btn.dataset.key;
+  btn.addEventListener("touchstart", (e) => { e.preventDefault(); keys[key] = true; btn.classList.add("pressed"); socket.emit("input", keys); });
+  btn.addEventListener("touchend", (e) => { e.preventDefault(); keys[key] = false; btn.classList.remove("pressed"); socket.emit("input", keys); });
+  btn.addEventListener("touchcancel", () => { keys[key] = false; btn.classList.remove("pressed"); socket.emit("input", keys); });
+});
+
+function doCreate() {
+  socket.emit("create_room", (res) => {
+    if (res.error) { document.getElementById("error-msg").textContent = res.error; return; }
+    roomCode = res.code; myIndex = res.playerIndex; myColor = res.color; myName = res.name; isHost = true;
+    showRoom();
+  });
+}
+
+function doJoin() {
+  const code = document.getElementById("join-code").value;
+  socket.emit("join_room", code, (res) => {
+    if (res.error) { document.getElementById("error-msg").textContent = res.error; return; }
+    roomCode = res.code; myIndex = res.playerIndex; myColor = res.color; myName = res.name; isHost = false;
+    showRoom();
+  });
+}
+
+function showRoom() {
+  document.getElementById("lobby-menu").style.display = "none";
+  document.getElementById("lobby-room").style.display = "flex";
+  document.getElementById("room-code-display").textContent = roomCode;
+  if (isHost) document.getElementById("start-btn").style.display = "block";
+}
+
+// ── Socket events ──
+socket.on("lobby_update", (data) => {
+  const list = document.getElementById("player-list");
+  list.innerHTML = "";
+  data.players.forEach(p => {
+    const chip = document.createElement("div");
+    chip.className = "player-chip";
+    chip.innerHTML = `<div class="player-dot" style="background:${p.color}"></div>${p.name}`;
+    list.appendChild(chip);
+  });
+  const count = data.players.length;
+  document.getElementById("waiting-msg").textContent = count < 2 ? "Waiting for players..." : `${count} players ready`;
+});
+
+socket.on("countdown_start", () => {
+  document.getElementById("lobby").style.display = "none";
+  document.getElementById("game-container").style.display = "block";
+  document.getElementById("countdown-overlay").style.display = "flex";
+  document.getElementById("results-overlay").style.display = "none";
+  raceActive = false;
+  resizeCanvas();
+  requestAnimationFrame(renderLoop);
+  if ("ontouchstart" in window) document.getElementById("touch-controls").style.display = "flex";
+});
+
+socket.on("state", (data) => {
+  gameState = data;
+  if (data.countdown > 0) document.getElementById("countdown-number").textContent = data.countdown;
+});
+
+socket.on("race_start", () => {
+  document.getElementById("countdown-overlay").style.display = "none";
+  raceActive = true;
+});
+
+socket.on("race_over", (order) => {
+  raceActive = false;
+  const overlay = document.getElementById("results-overlay");
+  overlay.style.display = "flex";
+  const list = document.getElementById("results-list");
+  list.innerHTML = "";
+  order.forEach((p, i) => {
+    const row = document.createElement("div");
+    row.className = "result-row";
+    row.innerHTML = `<div class="result-pos" style="background:${p.color}">${i + 1}</div><span>${p.name}</span><span style="color:#6b7280">${p.time.toFixed(1)}s</span>`;
+    list.appendChild(row);
+  });
+});
+
+socket.on("back_to_lobby", () => {
+  document.getElementById("results-overlay").style.display = "none";
+  document.getElementById("game-container").style.display = "none";
+  document.getElementById("lobby").style.display = "flex";
+  document.getElementById("lobby-room").style.display = "flex";
+  gameState = null; raceActive = false;
+});
+
+// ── Input ──
+const keys = { up: false, down: false, left: false, right: false };
+
+document.addEventListener("keydown", (e) => {
+  let changed = false;
+  if (e.code === "ArrowUp" || e.code === "KeyW") { keys.up = true; changed = true; }
+  if (e.code === "ArrowDown" || e.code === "KeyS") { keys.down = true; changed = true; }
+  if (e.code === "ArrowLeft" || e.code === "KeyA") { keys.left = true; changed = true; }
+  if (e.code === "ArrowRight" || e.code === "KeyD") { keys.right = true; changed = true; }
+  if (changed) { e.preventDefault(); socket.emit("input", keys); }
+});
+
+document.addEventListener("keyup", (e) => {
+  let changed = false;
+  if (e.code === "ArrowUp" || e.code === "KeyW") { keys.up = false; changed = true; }
+  if (e.code === "ArrowDown" || e.code === "KeyS") { keys.down = false; changed = true; }
+  if (e.code === "ArrowLeft" || e.code === "KeyA") { keys.left = false; changed = true; }
+  if (e.code === "ArrowRight" || e.code === "KeyD") { keys.right = false; changed = true; }
+  if (changed) socket.emit("input", keys);
+});
+
+// ── Canvas ──
+function resizeCanvas() { canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight; }
+window.addEventListener("resize", resizeCanvas);
+
+function renderLoop() { render(); requestAnimationFrame(renderLoop); }
+
+function render() {
+  if (!gameState) return;
+  const cw = canvas.width, ch = canvas.height;
+  ctx.clearRect(0, 0, cw, ch);
+
+  const scaleX = cw / TRACK_W, scaleY = ch / TRACK_H;
+  const scale = Math.min(scaleX, scaleY);
+  const offX = (cw - TRACK_W * scale) / 2;
+  const offY = (ch - TRACK_H * scale) / 2;
+
+  ctx.save();
+  ctx.translate(offX, offY);
+  ctx.scale(scale, scale);
+
+  // Grass
+  ctx.fillStyle = "#1a3a0e";
+  ctx.fillRect(0, 0, TRACK_W, TRACK_H);
+  ctx.strokeStyle = "rgba(40,80,20,0.3)";
+  ctx.lineWidth = 1;
+  for (let i = 0; i < TRACK_H; i += 20) { ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(TRACK_W, i); ctx.stroke(); }
+
+  // Track
+  ctx.fillStyle = "#374151";
+  ctx.beginPath(); ctx.ellipse(TRACK_CX, TRACK_CY, OUTER_RX, OUTER_RY, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = "#ef4444"; ctx.lineWidth = 6;
+  ctx.beginPath(); ctx.ellipse(TRACK_CX, TRACK_CY, OUTER_RX, OUTER_RY, 0, 0, Math.PI * 2); ctx.stroke();
+
+  // Inner
+  ctx.fillStyle = "#1a3a0e";
+  ctx.beginPath(); ctx.ellipse(TRACK_CX, TRACK_CY, INNER_RX, INNER_RY, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = "#ef4444"; ctx.lineWidth = 6;
+  ctx.beginPath(); ctx.ellipse(TRACK_CX, TRACK_CY, INNER_RX, INNER_RY, 0, 0, Math.PI * 2); ctx.stroke();
+
+  // Lane line
+  ctx.strokeStyle = "rgba(255,255,255,0.25)"; ctx.lineWidth = 2; ctx.setLineDash([12, 18]);
+  const midRX = (OUTER_RX + INNER_RX) / 2, midRY = (OUTER_RY + INNER_RY) / 2;
+  ctx.beginPath(); ctx.ellipse(TRACK_CX, TRACK_CY, midRX, midRY, 0, 0, Math.PI * 2); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Start/finish
+  const sfAngle = Math.PI;
+  const sfX1 = TRACK_CX + Math.cos(sfAngle) * (INNER_RX + 8);
+  const sfY1 = TRACK_CY + Math.sin(sfAngle) * (INNER_RY + 8);
+  const sfX2 = TRACK_CX + Math.cos(sfAngle) * (OUTER_RX - 8);
+  const sfY2 = TRACK_CY + Math.sin(sfAngle) * (OUTER_RY - 8);
+  const dx = sfX2 - sfX1, dy = sfY2 - sfY1;
+  const len = Math.sqrt(dx * dx + dy * dy);
+  const nx = dx / len, ny = dy / len, px = -ny, py = nx;
+  const squares = 10, sqSize = len / squares;
+  for (let i = 0; i < squares; i++) {
+    for (let j = 0; j < 2; j++) {
+      ctx.fillStyle = (i + j) % 2 === 0 ? "#fff" : "#222";
+      const bx = sfX1 + nx * i * sqSize + px * (j - 0.5) * 6;
+      const by = sfY1 + ny * i * sqSize + py * (j - 0.5) * 6;
+      ctx.fillRect(bx - 3, by - sqSize / 2, 6, sqSize);
+    }
+  }
+
+  // Karts
+  if (gameState.players) {
+    const sorted = [...gameState.players].sort((a, b) => {
+      if (a.id === socket.id) return 1;
+      if (b.id === socket.id) return -1;
+      return 0;
+    });
+    for (const p of sorted) drawStickmanKart(p.x, p.y, p.heading, p.color, p.name, p.id === socket.id, p.speed);
+  }
+
+  ctx.restore();
+
+  // HUD
+  const me = gameState.players?.find(p => p.id === socket.id);
+  if (me) {
+    document.getElementById("hud-lap").textContent = `LAP ${Math.min(me.lap + 1, 3)}/3`;
+    document.getElementById("hud-time").textContent = `${(me.raceTime || 0).toFixed(1)}s`;
+    document.getElementById("hud-speed").textContent = `${Math.abs(Math.round(me.speed))} km/h`;
+  }
+
+  if (gameState.players) {
+    const sorted = [...gameState.players].sort((a, b) => {
+      if (a.finished && !b.finished) return -1;
+      if (!a.finished && b.finished) return 1;
+      if (a.finished && b.finished) return a.finishTime - b.finishTime;
+      if (b.lap !== a.lap) return b.lap - a.lap;
+      return b.checkpoint - a.checkpoint;
+    });
+    const posDiv = document.getElementById("hud-positions");
+    posDiv.innerHTML = "";
+    sorted.forEach((p, i) => {
+      const div = document.createElement("div");
+      div.className = "hud-pos";
+      div.style.color = p.color;
+      div.textContent = `${i + 1}. ${p.name}${p.finished ? " \u2713" : ""}`;
+      posDiv.appendChild(div);
+    });
+  }
+}
+
+function drawStickmanKart(x, y, heading, color, name, isMe, speed) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(heading);
+  const kw = 30, kh = 18;
+
+  ctx.fillStyle = "rgba(0,0,0,0.3)";
+  ctx.beginPath(); ctx.ellipse(2, 2, kw / 2 + 2, kh / 2 + 2, 0, 0, Math.PI * 2); ctx.fill();
+
+  ctx.fillStyle = color; ctx.strokeStyle = "#1f2937"; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.roundRect(-kw / 2, -kh / 2, kw, kh, 4); ctx.fill(); ctx.stroke();
+
+  ctx.fillStyle = "#111";
+  const ww = 8, wh = 5;
+  ctx.fillRect(-kw / 2 - 2, -kh / 2 - 2, ww, wh);
+  ctx.fillRect(-kw / 2 - 2, kh / 2 - 3, ww, wh);
+  ctx.fillRect(kw / 2 - ww + 2, -kh / 2 - 2, ww, wh);
+  ctx.fillRect(kw / 2 - ww + 2, kh / 2 - 3, ww, wh);
+
+  ctx.strokeStyle = "#1f2937"; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.moveTo(-6, 0); ctx.lineTo(4, 0); ctx.stroke();
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(-2, 0); ctx.lineTo(-4, -6); ctx.moveTo(-2, 0); ctx.lineTo(-4, 6); ctx.stroke();
+
+  ctx.fillStyle = "#fcd34d"; ctx.strokeStyle = "#1f2937"; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(6, 0, 5.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.arc(6, 0, 5.5, -Math.PI * 0.6, Math.PI * 0.6); ctx.fill();
+  ctx.strokeStyle = "#1f2937"; ctx.lineWidth = 1; ctx.stroke();
+
+  if (Math.abs(speed) > 180) {
+    ctx.strokeStyle = "rgba(255,255,255,0.4)"; ctx.lineWidth = 1.5;
+    for (let i = 0; i < 3; i++) {
+      const ly = -7 + i * 7, sl = 8 + Math.random() * 12;
+      ctx.beginPath(); ctx.moveTo(-kw / 2 - 4, ly); ctx.lineTo(-kw / 2 - 4 - sl, ly); ctx.stroke();
+    }
+  }
+  ctx.restore();
+
+  ctx.save();
+  ctx.font = "600 11px 'Plus Jakarta Sans', sans-serif";
+  ctx.textAlign = "center";
+  ctx.shadowColor = "rgba(0,0,0,0.9)"; ctx.shadowBlur = 4;
+  ctx.fillStyle = isMe ? "#fff" : "rgba(255,255,255,0.65)";
+  ctx.fillText(name, x, y - 22);
+  if (isMe) {
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.moveTo(x, y - 28); ctx.lineTo(x - 5, y - 35); ctx.lineTo(x + 5, y - 35); ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+}
+</script>
+</body>
+</html>

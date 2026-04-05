@@ -49,11 +49,8 @@ canvas{display:block;width:100%;height:100%}
 .touch-pedals{display:flex;flex-direction:column;gap:10px}
 .controls-hint{font-size:11px;color:#4b5563;text-align:center;margin-top:4px}
 #connecting-msg{color:#f59e0b;font-size:13px;min-height:18px}
-/* Speed bar */
 #speed-bar-container{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);width:200px;height:8px;background:rgba(255,255,255,.1);border-radius:4px;z-index:10;pointer-events:none}
 #speed-bar{height:100%;border-radius:4px;background:linear-gradient(90deg,#6ee7b7,#f59e0b,#ef4444);width:0%;transition:width .1s}
-/* Steering wheel indicator */
-#steering-indicator{position:fixed;bottom:40px;left:50%;transform:translateX(-50%);pointer-events:none;z-index:10}
 </style>
 </head>
 <body>
@@ -129,12 +126,123 @@ const OUTER_RX = 650, OUTER_RY = 350;
 const INNER_RX = 400, INNER_RY = 170;
 const MID_RX = (OUTER_RX + INNER_RX) / 2;
 const MID_RY = (OUTER_RY + INNER_RY) / 2;
-const TRACK_HALF_W = (OUTER_RX - INNER_RX) / 2; // half-width of road
+const TRACK_HALF_W = (OUTER_RX - INNER_RX) / 2;
 
 const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
 
-// ── Connect ──
+// ═══════════════════════════════════════════
+// PRE-COMPUTE TRACK CENTERLINE AS SEGMENTS
+// ═══════════════════════════════════════════
+// Sample the elliptical track center at high resolution.
+// Each segment stores: world position, cumulative arc-length distance,
+// tangent angle, and curvature (for road curve visual).
+
+const TRACK_SAMPLES = 2000; // high res for smooth lookup
+const trackPoints = []; // {x, y, dist, tangentAngle, curvature, angle}
+let totalTrackLength = 0;
+
+(function buildTrack() {
+  // Sample from 0..2PI (counter-clockwise)
+  // Pre-compute positions and arc lengths
+  const raw = [];
+  for (let i = 0; i <= TRACK_SAMPLES; i++) {
+    const t = (i / TRACK_SAMPLES) * Math.PI * 2;
+    const x = TRACK_CX + Math.cos(t) * MID_RX;
+    const y = TRACK_CY + Math.sin(t) * MID_RY;
+    raw.push({ x, y, angle: t });
+  }
+
+  // Compute cumulative distances
+  let cumDist = 0;
+  for (let i = 0; i < raw.length; i++) {
+    if (i > 0) {
+      const dx = raw[i].x - raw[i - 1].x;
+      const dy = raw[i].y - raw[i - 1].y;
+      cumDist += Math.sqrt(dx * dx + dy * dy);
+    }
+    raw[i].dist = cumDist;
+  }
+  totalTrackLength = cumDist;
+
+  // Compute tangent angles and curvature
+  for (let i = 0; i < raw.length; i++) {
+    const prev = raw[(i - 1 + raw.length) % raw.length];
+    const next = raw[(i + 1) % raw.length];
+    const tx = next.x - prev.x;
+    const ty = next.y - prev.y;
+    raw[i].tangentAngle = Math.atan2(ty, tx);
+
+    // Curvature via cross product of velocity and acceleration
+    const prev2 = raw[(i - 2 + raw.length) % raw.length];
+    const next2 = raw[(i + 2) % raw.length];
+    const vx = next.x - prev.x;
+    const vy = next.y - prev.y;
+    const ax = next2.x - 2 * raw[i].x + prev2.x;
+    const ay = next2.y - 2 * raw[i].y + prev2.y;
+    const speed = Math.sqrt(vx * vx + vy * vy);
+    raw[i].curvature = speed > 0.01 ? (vx * ay - vy * ax) / (speed * speed * speed) : 0;
+  }
+
+  // Copy to trackPoints (drop the wrapping duplicate)
+  for (let i = 0; i < TRACK_SAMPLES; i++) {
+    trackPoints.push(raw[i]);
+  }
+})();
+
+// Find the closest track segment to a world position
+function findNearestSegment(wx, wy) {
+  // Quick approximation via angle, then refine
+  const approxAngle = Math.atan2(wy - TRACK_CY, wx - TRACK_CX);
+  let normAngle = approxAngle < 0 ? approxAngle + Math.PI * 2 : approxAngle;
+  let approxIdx = Math.round((normAngle / (Math.PI * 2)) * TRACK_SAMPLES) % TRACK_SAMPLES;
+
+  // Search nearby for closest
+  let bestDist = Infinity, bestIdx = approxIdx;
+  const SEARCH = 40;
+  for (let d = -SEARCH; d <= SEARCH; d++) {
+    const idx = (approxIdx + d + TRACK_SAMPLES) % TRACK_SAMPLES;
+    const dx = trackPoints[idx].x - wx;
+    const dy = trackPoints[idx].y - wy;
+    const dist = dx * dx + dy * dy;
+    if (dist < bestDist) { bestDist = dist; bestIdx = idx; }
+  }
+  return bestIdx;
+}
+
+// Get lateral offset from track center (positive = right of tangent direction)
+function getLateral(wx, wy, segIdx) {
+  const seg = trackPoints[segIdx];
+  const dx = wx - seg.x;
+  const dy = wy - seg.y;
+  const ta = seg.tangentAngle;
+  // Cross product with tangent gives signed lateral distance
+  return -dx * Math.sin(ta) + dy * Math.cos(ta);
+}
+
+// Get arc-length distance between two segment indices (signed, forward = positive)
+function getArcDistance(fromIdx, toIdx) {
+  const fromDist = trackPoints[fromIdx].dist;
+  const toDist = trackPoints[toIdx].dist;
+  let diff = toDist - fromDist;
+  // Handle wrapping
+  if (diff > totalTrackLength / 2) diff -= totalTrackLength;
+  if (diff < -totalTrackLength / 2) diff += totalTrackLength;
+  return diff;
+}
+
+// Detect player's travel direction from heading vs track tangent
+function getTravelDirection(heading, segIdx) {
+  const ta = trackPoints[segIdx].tangentAngle;
+  let diff = heading - ta;
+  while (diff > Math.PI) diff -= Math.PI * 2;
+  while (diff < -Math.PI) diff += Math.PI * 2;
+  return Math.abs(diff) < Math.PI / 2 ? 1 : -1;
+}
+
+// ═══════════════════════════════════════════
+// CONNECT
+// ═══════════════════════════════════════════
 socket = io(SERVER_URL);
 socket.on("connect", () => {
   document.getElementById("connecting-msg").textContent = "";
@@ -147,7 +255,9 @@ socket.on("connect_error", () => {
   document.getElementById("btn-join").disabled = true;
 });
 
-// ── UI ──
+// ═══════════════════════════════════════════
+// UI
+// ═══════════════════════════════════════════
 document.getElementById("btn-create").addEventListener("click", doCreate);
 document.getElementById("btn-join").addEventListener("click", doJoin);
 document.getElementById("start-btn").addEventListener("click", () => socket.emit("start_race"));
@@ -183,7 +293,9 @@ function showRoom() {
   if (isHost) document.getElementById("start-btn").style.display = "block";
 }
 
-// ── Socket events ──
+// ═══════════════════════════════════════════
+// SOCKET EVENTS
+// ═══════════════════════════════════════════
 socket.on("lobby_update", (data) => {
   const list = document.getElementById("player-list");
   list.innerHTML = "";
@@ -238,7 +350,9 @@ socket.on("back_to_lobby", () => {
   gameState = null; raceActive = false;
 });
 
-// ── Input ──
+// ═══════════════════════════════════════════
+// INPUT
+// ═══════════════════════════════════════════
 const keys = { up: false, down: false, left: false, right: false };
 document.addEventListener("keydown", (e) => {
   let changed = false;
@@ -257,49 +371,57 @@ document.addEventListener("keyup", (e) => {
   if (changed) socket.emit("input", keys);
 });
 
-// ── Canvas ──
+// ═══════════════════════════════════════════
+// CANVAS
+// ═══════════════════════════════════════════
 function resizeCanvas() { canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight; }
 window.addEventListener("resize", resizeCanvas);
 function renderLoop() { render(); requestAnimationFrame(renderLoop); }
 
-// ══════════════════════════════════════
-// PSEUDO-3D FIRST PERSON RENDERER
-// ══════════════════════════════════════
+// ═══════════════════════════════════════════
+// PSEUDO-3D OUTRUN RENDERER
+// ═══════════════════════════════════════════
 
-// The track is an elliptical oval. We compute the player's position along the track
-// as an angle, then project the road ahead using perspective projection.
+// The renderer works by:
+// 1. Finding the player's position on the pre-computed track centerline
+// 2. Walking forward along the track in small arc-length steps
+// 3. For each step, projecting it into screen space using perspective
+// 4. The curvature at each point shifts the road left/right on screen
+// This is the classic OutRun/road-rash approach.
 
-function getTrackPos(x, y) {
-  // Returns angle on the elliptical track and lateral offset from center
-  const angle = Math.atan2(y - TRACK_CY, x - TRACK_CX);
-  // Center of track at this angle
-  const cx = TRACK_CX + Math.cos(angle) * MID_RX;
-  const cy = TRACK_CY + Math.sin(angle) * MID_RY;
-  // Distance from center line
-  const dx = x - cx;
-  const dy = y - cy;
-  const lateralDist = Math.sqrt(dx * dx + dy * dy);
-  // Which side? Use cross product with track tangent
-  const tangentX = -Math.sin(angle) * MID_RX;
-  const tangentY = Math.cos(angle) * MID_RY;
-  const cross = dx * tangentY - dy * tangentX;
-  const side = cross > 0 ? 1 : -1;
-  return { angle, lateral: side * lateralDist };
-}
+const ROAD_WIDTH = 280; // world-unit width of road surface
+const DRAW_DISTANCE = 300; // number of segments to draw ahead
+const SEG_STEP = totalTrackLength / TRACK_SAMPLES; // arc-length per track sample
+const CAMERA_HEIGHT = 120; // camera height above road
+const CAMERA_DEPTH_FACTOR = 1.2; // field of view factor
 
-function getTrackCenterAt(angle) {
-  return {
-    x: TRACK_CX + Math.cos(angle) * MID_RX,
-    y: TRACK_CY + Math.sin(angle) * MID_RY
-  };
-}
+// Scenery: trees/poles along the road
+function drawSceneryAtSegment(screenX, screenY, scale, roadW, segIdx) {
+  if (scale < 0.5) return;
+  // Every 20th segment gets trees on both sides
+  if (segIdx % 20 !== 0) return;
 
-function getTrackCurvatureAt(angle) {
-  // Curvature of ellipse: κ = ab / (a²sin²t + b²cos²t)^(3/2)
-  const a = MID_RX, b = MID_RY;
-  const s = Math.sin(angle), c = Math.cos(angle);
-  const denom = Math.pow(a * a * s * s + b * b * c * c, 1.5);
-  return (a * b) / denom;
+  const treeH = scale * 60;
+  const trunkW = scale * 4;
+  const canopyR = scale * 14;
+
+  // Left tree
+  const lx = screenX - roadW / 2 - scale * 40;
+  ctx.fillStyle = "#4a2810";
+  ctx.fillRect(lx - trunkW / 2, screenY - treeH, trunkW, treeH);
+  ctx.fillStyle = "#1a5c1a";
+  ctx.beginPath();
+  ctx.arc(lx, screenY - treeH, canopyR, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Right tree
+  const rx = screenX + roadW / 2 + scale * 40;
+  ctx.fillStyle = "#4a2810";
+  ctx.fillRect(rx - trunkW / 2, screenY - treeH, trunkW, treeH);
+  ctx.fillStyle = "#1a5c1a";
+  ctx.beginPath();
+  ctx.arc(rx, screenY - treeH, canopyR, 0, Math.PI * 2);
+  ctx.fill();
 }
 
 function render() {
@@ -308,96 +430,78 @@ function render() {
   const me = gameState.players.find(p => p.id === socket.id);
   if (!me) return;
 
-  // Sky gradient
+  // ── Clear ──
+  ctx.clearRect(0, 0, cw, ch);
+
+  // ── Sky gradient ──
   const skyGrad = ctx.createLinearGradient(0, 0, 0, ch * 0.5);
   skyGrad.addColorStop(0, "#0f172a");
-  skyGrad.addColorStop(0.6, "#1e3a5f");
-  skyGrad.addColorStop(1, "#4a8bb5");
+  skyGrad.addColorStop(0.5, "#1e3a5f");
+  skyGrad.addColorStop(1, "#7ab4d6");
   ctx.fillStyle = skyGrad;
-  ctx.fillRect(0, 0, cw, ch * 0.5);
+  ctx.fillRect(0, 0, cw, ch);
 
-  // Ground
-  ctx.fillStyle = "#1a3a0e";
+  // ── Ground base ──
+  ctx.fillStyle = "#2d5a1e";
   ctx.fillRect(0, ch * 0.5, cw, ch * 0.5);
 
-  // Player track position
-  const myTrack = getTrackPos(me.x, me.y);
-  const myAngle = myTrack.angle;
-  const myLateral = myTrack.lateral;
+  // ── Player track position ──
+  const mySegIdx = findNearestSegment(me.x, me.y);
+  const myLateral = getLateral(me.x, me.y, mySegIdx);
+  const direction = getTravelDirection(me.heading, mySegIdx);
 
-  // Road parameters
-  const ROAD_W = TRACK_HALF_W * 2.8; // full road width in world units (wider for better feel)
-  const DRAW_DIST = 140; // how many segments ahead to draw
-  const SEG_LENGTH = 0.005; // angle increment per segment (radians)
-  const horizon = ch * 0.45;
+  const horizon = ch * 0.42;
+  const camDepth = CAMERA_DEPTH_FACTOR * (cw / 2);
 
-  // Direction: track goes counter-clockwise (angle decreases)
-  // We step backwards in angle to look "ahead"
-  const direction = -1; // CCW travel
-
-  // Build road segments
-  const segments = [];
-  for (let i = 0; i < DRAW_DIST; i++) {
-    const segAngle = myAngle + direction * i * SEG_LENGTH;
-    const center = getTrackCenterAt(segAngle);
-    // Curvature determines visual curve
-    const curvature = getTrackCurvatureAt(segAngle);
-    segments.push({ angle: segAngle, cx: center.x, cy: center.y, curvature, dist: i });
-  }
-
-  // Project segments to screen
-  const camHeight = 50;
-  const camDist = 10;
-  const fov = 1.4;
-
-  // Accumulate curve offset for pseudo-3D effect
-  let curveOffset = 0;
+  // Build projected segments by walking forward along track
   const projected = [];
+  let curvatureAccum = 0;
 
-  for (let i = 0; i < segments.length; i++) {
-    const seg = segments[i];
-    const z = (i + 1) * 5; // depth
+  for (let i = 0; i < DRAW_DISTANCE; i++) {
+    const segOffset = direction * i;
+    const segIdx = ((mySegIdx + segOffset) % TRACK_SAMPLES + TRACK_SAMPLES) % TRACK_SAMPLES;
+    const seg = trackPoints[segIdx];
 
-    // Perspective scale
-    const scale = fov * ch / z;
-    const screenY = horizon + (camHeight * scale);
+    // z = depth ahead of camera
+    const z = (i + 1) * 6;
 
-    if (screenY < horizon - 10 || screenY > ch + 50) continue;
+    // Perspective projection
+    const scale = camDepth / z;
+    const screenY = horizon + CAMERA_HEIGHT * scale;
+
+    if (screenY <= horizon || screenY > ch + 20) continue;
 
     // Road width at this depth
-    const roadScreenW = ROAD_W * scale;
+    const roadScreenW = ROAD_WIDTH * scale;
 
-    // Lateral offset: player's offset from center shifts the road
-    const lateralShift = -myLateral * scale * 0.6;
+    // Curvature offset: accumulate curvature to shift road left/right
+    curvatureAccum += seg.curvature * direction * 4.0;
+    const curveX = curvatureAccum * scale * 60;
 
-    // Curve accumulation
-    const angleDiff = seg.angle - myAngle;
-    // Track tangent direction change = curvature
-    const tangentAngle = Math.atan2(-Math.sin(seg.angle) * MID_RY, -Math.cos(seg.angle) * MID_RX);
-    const myTangent = Math.atan2(-Math.sin(myAngle) * MID_RY, -Math.cos(myAngle) * MID_RX);
-    let dAngle = tangentAngle - myTangent;
-    while (dAngle > Math.PI) dAngle -= 2 * Math.PI;
-    while (dAngle < -Math.PI) dAngle += 2 * Math.PI;
-    curveOffset = dAngle * ch * 1.0;
+    // Lateral offset (player position shifts road opposite)
+    const lateralShift = -myLateral * scale * 0.8;
 
-    const screenX = cw / 2 + lateralShift + curveOffset;
+    const screenX = cw / 2 + lateralShift + curveX;
 
     projected.push({
-      screenX, screenY, roadScreenW, scale, z, dist: i,
-      segAngle: seg.angle
+      screenX, screenY, roadScreenW, scale, z,
+      dist: i, segIdx, curveX
     });
   }
 
-  // Draw road from far to near
+  // ── Draw road from back to front ──
   for (let i = projected.length - 1; i >= 1; i--) {
     const far = projected[i];
     const near = projected[i - 1];
+    const stripe = Math.floor(far.dist / 4) % 2 === 0;
 
-    // Alternating road color (for speed illusion)
-    const stripe = Math.floor(far.dist / 3) % 2 === 0;
+    // Ground color stripes (alternate grass shading)
+    const grassColor = stripe ? "#2d5a1e" : "#265318";
+    ctx.fillStyle = grassColor;
+    ctx.fillRect(0, far.screenY, cw, near.screenY - far.screenY + 1);
 
     // Road surface
-    ctx.fillStyle = stripe ? "#374151" : "#2d3748";
+    ctx.fillStyle = stripe ? "#444c56" : "#383f49";
     ctx.beginPath();
     ctx.moveTo(near.screenX - near.roadScreenW / 2, near.screenY);
     ctx.lineTo(near.screenX + near.roadScreenW / 2, near.screenY);
@@ -406,9 +510,10 @@ function render() {
     ctx.closePath();
     ctx.fill();
 
-    // Red/white curbs
-    const curbW = near.roadScreenW * 0.06;
-    const curbColor = stripe ? "#ef4444" : "#ffffff";
+    // Curbs
+    const curbW = near.roadScreenW * 0.05;
+    const curbColor = stripe ? "#e74c3c" : "#ecf0f1";
+
     // Left curb
     ctx.fillStyle = curbColor;
     ctx.beginPath();
@@ -418,6 +523,7 @@ function render() {
     ctx.lineTo(far.screenX - far.roadScreenW / 2 - curbW * (far.scale / near.scale), far.screenY);
     ctx.closePath();
     ctx.fill();
+
     // Right curb
     ctx.beginPath();
     ctx.moveTo(near.screenX + near.roadScreenW / 2, near.screenY);
@@ -427,10 +533,10 @@ function render() {
     ctx.closePath();
     ctx.fill();
 
-    // Center dashed line
+    // Center dashes
     if (stripe) {
-      ctx.fillStyle = "rgba(255,255,255,0.3)";
-      const dashW = near.roadScreenW * 0.008;
+      ctx.fillStyle = "rgba(255,255,255,0.25)";
+      const dashW = Math.max(1, near.roadScreenW * 0.006);
       ctx.beginPath();
       ctx.moveTo(near.screenX - dashW, near.screenY);
       ctx.lineTo(near.screenX + dashW, near.screenY);
@@ -440,13 +546,42 @@ function render() {
       ctx.fill();
     }
 
-    // Grass detail stripes
-    if (stripe) {
-      ctx.fillStyle = "#16331a";
-      // Left grass
-      ctx.fillRect(0, far.screenY, far.screenX - far.roadScreenW / 2 - curbW * 2, near.screenY - far.screenY + 1);
-      // Right grass
-      ctx.fillRect(far.screenX + far.roadScreenW / 2 + curbW * 2, far.screenY, cw, near.screenY - far.screenY + 1);
+    // Scenery
+    drawSceneryAtSegment(far.screenX, far.screenY, far.scale, far.roadScreenW, far.segIdx);
+  }
+
+  // ── Start/Finish line ──
+  // The start line is at angle PI (the left side of the ellipse)
+  // That corresponds to roughly segment index TRACK_SAMPLES/2
+  const sfSegIdx = Math.round(TRACK_SAMPLES / 2);
+  const sfArcDist = getArcDistance(mySegIdx, sfSegIdx) * direction;
+  if (sfArcDist > 0 && sfArcDist < DRAW_DISTANCE * SEG_STEP * 0.9) {
+    // Find which projected segment it maps to
+    const sfStepFloat = sfArcDist / (SEG_STEP * Math.abs(direction || 1));
+    const sfProjIdx = Math.round(sfStepFloat / 1);
+    // Search projected for closest dist
+    let bestProj = null;
+    let bestDiff = Infinity;
+    for (const p of projected) {
+      const diff = Math.abs(p.dist - sfStepFloat);
+      if (diff < bestDiff) { bestDiff = diff; bestProj = p; }
+    }
+    if (bestProj && bestProj.scale > 0.5) {
+      const sx = bestProj.screenX;
+      const sy = bestProj.screenY;
+      const rw = bestProj.roadScreenW;
+      const sc = bestProj.scale;
+
+      const bannerH = sc * 30;
+      const bannerW = rw * 1.1;
+      const cols = 8, rows = 2;
+      const cellW = bannerW / cols, cellH = bannerH / rows;
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          ctx.fillStyle = (r + c) % 2 === 0 ? "#fff" : "#111";
+          ctx.fillRect(sx - bannerW / 2 + c * cellW, sy - bannerH * 2 - r * cellH, cellW, cellH);
+        }
+      }
     }
   }
 
@@ -455,87 +590,59 @@ function render() {
   const kartDrawList = [];
 
   for (const other of others) {
-    const otherTrack = getTrackPos(other.x, other.y);
-    // Angle difference (how far ahead/behind)
-    let angleDiff = (otherTrack.angle - myAngle) * direction;
-    while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
-    while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+    const otherSegIdx = findNearestSegment(other.x, other.y);
+    const otherLateral = getLateral(other.x, other.y, otherSegIdx);
+    const arcDist = getArcDistance(mySegIdx, otherSegIdx) * direction;
 
-    // Only show karts ahead (positive angleDiff = ahead for CCW travel)
-    if (angleDiff < -0.02 || angleDiff > SEG_LENGTH * DRAW_DIST) continue;
+    // Only draw karts ahead within draw distance
+    if (arcDist < -SEG_STEP * 3 || arcDist > DRAW_DISTANCE * SEG_STEP) continue;
 
-    const segIdx = angleDiff / SEG_LENGTH;
-    if (segIdx < 0 || segIdx >= projected.length - 1) continue;
+    // Map arc distance to projected segment
+    const stepFloat = Math.max(0, arcDist / SEG_STEP);
+    if (stepFloat >= projected.length - 1) continue;
 
-    const lo = Math.floor(segIdx);
-    const hi = Math.min(lo + 1, projected.length - 1);
-    const t = segIdx - lo;
+    // Interpolate between projected segments
+    const lo = Math.min(Math.floor(stepFloat), projected.length - 2);
+    const hi = lo + 1;
+    const t = stepFloat - lo;
 
-    if (lo >= projected.length || hi >= projected.length) continue;
+    // Find projected indices by dist
+    let projLo = null, projHi = null;
+    for (const p of projected) {
+      if (p.dist === lo || (projLo === null && p.dist >= lo)) projLo = p;
+      if (p.dist === hi || (projLo !== null && projHi === null && p.dist >= hi)) { projHi = p; break; }
+    }
 
-    const projLo = projected[lo];
-    const projHi = projected[hi];
-    if (!projLo || !projHi) continue;
+    // Simpler: just find the closest projected segment
+    let closestProj = null;
+    let closestDiff = Infinity;
+    for (const p of projected) {
+      const diff = Math.abs(p.dist - stepFloat);
+      if (diff < closestDiff) { closestDiff = diff; closestProj = p; }
+    }
+    if (!closestProj || closestProj.scale < 0.3) continue;
 
-    const screenX = projLo.screenX + (projHi.screenX - projLo.screenX) * t;
-    const screenY = projLo.screenY + (projHi.screenY - projLo.screenY) * t;
-    const scale = projLo.scale + (projHi.scale - projLo.scale) * t;
-    const roadW = projLo.roadScreenW + (projHi.roadScreenW - projLo.roadScreenW) * t;
-
-    // Lateral position on road
-    const lateralOffset = (otherTrack.lateral - myLateral) * scale;
+    const lateralDiff = (otherLateral - myLateral);
+    const lateralScreen = lateralDiff * closestProj.scale * 0.8;
 
     kartDrawList.push({
-      x: screenX + lateralOffset,
-      y: screenY,
-      scale,
+      x: closestProj.screenX + lateralScreen,
+      y: closestProj.screenY,
+      scale: closestProj.scale,
       color: other.color,
       name: other.name,
-      z: projLo.z + (projHi.z - projLo.z) * t
+      z: closestProj.z
     });
   }
 
-  // Sort by z (far first)
+  // Sort by z (far first = draw first)
   kartDrawList.sort((a, b) => b.z - a.z);
-
   for (const k of kartDrawList) {
     drawKartSprite(k.x, k.y, k.scale, k.color, k.name);
   }
 
-  // ── Draw player's own kart (at bottom of screen) ──
+  // ── Draw player's kart at bottom ──
   drawPlayerKart(cw, ch, me.color, me.speed);
-
-  // ── Start/finish banner ──
-  // Check if start/finish line is visible ahead
-  let sfAngleDiff = (Math.PI - myAngle) * direction;
-  while (sfAngleDiff > Math.PI) sfAngleDiff -= 2 * Math.PI;
-  while (sfAngleDiff < -Math.PI) sfAngleDiff += 2 * Math.PI;
-  if (sfAngleDiff > 0 && sfAngleDiff < SEG_LENGTH * DRAW_DIST * 0.8) {
-    const sfIdx = sfAngleDiff / SEG_LENGTH;
-    if (sfIdx >= 0 && sfIdx < projected.length - 1) {
-      const lo = Math.floor(sfIdx);
-      const hi = Math.min(lo + 1, projected.length - 1);
-      if (projected[lo] && projected[hi]) {
-        const t = sfIdx - lo;
-        const sx = projected[lo].screenX + (projected[hi].screenX - projected[lo].screenX) * t;
-        const sy = projected[lo].screenY + (projected[hi].screenY - projected[lo].screenY) * t;
-        const sc = projected[lo].scale + (projected[hi].scale - projected[lo].scale) * t;
-        const rw = projected[lo].roadScreenW + (projected[hi].roadScreenW - projected[lo].roadScreenW) * t;
-
-        // Checkerboard banner
-        const bannerH = sc * 30;
-        const bannerW = rw * 1.1;
-        const cols = 8, rows = 2;
-        const cellW = bannerW / cols, cellH = bannerH / rows;
-        for (let r = 0; r < rows; r++) {
-          for (let c = 0; c < cols; c++) {
-            ctx.fillStyle = (r + c) % 2 === 0 ? "#fff" : "#111";
-            ctx.fillRect(sx - bannerW / 2 + c * cellW, sy - bannerH - r * cellH, cellW, cellH);
-          }
-        }
-      }
-    }
-  }
 
   // ── HUD ──
   document.getElementById("hud-lap").textContent = `LAP ${Math.min(me.lap + 1, 3)}/3`;
@@ -564,19 +671,23 @@ function render() {
 }
 
 function drawKartSprite(x, y, scale, color, name) {
-  const size = scale * 12;
-  if (size < 2) return;
+  const size = scale * 10;
+  if (size < 1.5) return;
 
   ctx.save();
   ctx.translate(x, y);
 
-  // Kart body
-  const kw = size * 2.5, kh = size * 1.8;
+  // Shadow
   ctx.fillStyle = "rgba(0,0,0,0.3)";
-  ctx.fillRect(-kw / 2 + 2, -kh + 2, kw, kh);
+  ctx.beginPath();
+  ctx.ellipse(0, 2, size * 1.8, size * 0.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Kart body
+  const kw = size * 2.5, kh = size * 1.5;
   ctx.fillStyle = color;
   ctx.strokeStyle = "#1f2937";
-  ctx.lineWidth = Math.max(1, size * 0.15);
+  ctx.lineWidth = Math.max(1, size * 0.12);
   ctx.beginPath();
   ctx.roundRect(-kw / 2, -kh, kw, kh, size * 0.3);
   ctx.fill();
@@ -584,33 +695,33 @@ function drawKartSprite(x, y, scale, color, name) {
 
   // Wheels
   ctx.fillStyle = "#111";
-  const ww = kw * 0.25, wh = kh * 0.2;
-  ctx.fillRect(-kw / 2 - ww * 0.3, -kh * 0.2, ww, wh);
-  ctx.fillRect(kw / 2 - ww * 0.7, -kh * 0.2, ww, wh);
+  const ww = kw * 0.22, wh = kh * 0.22;
+  ctx.fillRect(-kw / 2 - ww * 0.3, -kh * 0.25, ww, wh);
+  ctx.fillRect(kw / 2 - ww * 0.7, -kh * 0.25, ww, wh);
 
   // Stickman head
   ctx.fillStyle = "#fcd34d";
   ctx.strokeStyle = "#1f2937";
-  ctx.lineWidth = Math.max(0.5, size * 0.1);
+  ctx.lineWidth = Math.max(0.5, size * 0.08);
   ctx.beginPath();
-  ctx.arc(0, -kh - size * 0.5, size * 0.45, 0, Math.PI * 2);
+  ctx.arc(0, -kh - size * 0.35, size * 0.35, 0, Math.PI * 2);
   ctx.fill();
   ctx.stroke();
 
-  // Helmet
+  // Helmet (top half)
   ctx.fillStyle = color;
   ctx.beginPath();
-  ctx.arc(0, -kh - size * 0.5, size * 0.45, -Math.PI, 0);
+  ctx.arc(0, -kh - size * 0.35, size * 0.35, -Math.PI, 0);
   ctx.fill();
 
-  // Name
-  if (size > 5) {
-    ctx.font = `600 ${Math.max(9, size * 0.7)}px 'Plus Jakarta Sans', sans-serif`;
+  // Name label
+  if (size > 4) {
+    ctx.font = `600 ${Math.max(8, size * 0.6)}px 'Plus Jakarta Sans', sans-serif`;
     ctx.textAlign = "center";
     ctx.fillStyle = "#fff";
     ctx.shadowColor = "rgba(0,0,0,0.9)";
     ctx.shadowBlur = 3;
-    ctx.fillText(name, 0, -kh - size * 1.2);
+    ctx.fillText(name, 0, -kh - size * 0.9);
     ctx.shadowBlur = 0;
   }
 
@@ -618,20 +729,21 @@ function drawKartSprite(x, y, scale, color, name) {
 }
 
 function drawPlayerKart(cw, ch, color, speed) {
-  const kartW = cw * 0.18;
-  const kartH = kartW * 0.5;
+  const kartW = cw * 0.16;
+  const kartH = kartW * 0.45;
   const cx = cw / 2;
-  const cy = ch - kartH * 0.3;
+  const cy = ch - kartH * 0.15;
 
   ctx.save();
   ctx.translate(cx, cy);
 
-  // Kart body (seen from behind, wider)
-  ctx.fillStyle = "rgba(0,0,0,0.3)";
+  // Shadow
+  ctx.fillStyle = "rgba(0,0,0,0.4)";
   ctx.beginPath();
-  ctx.roundRect(-kartW / 2 + 3, -kartH + 3, kartW, kartH, 6);
+  ctx.ellipse(0, 5, kartW * 0.7, kartH * 0.2, 0, 0, Math.PI * 2);
   ctx.fill();
 
+  // Kart body
   ctx.fillStyle = color;
   ctx.strokeStyle = "#1f2937";
   ctx.lineWidth = 3;
@@ -642,18 +754,17 @@ function drawPlayerKart(cw, ch, color, speed) {
 
   // Rear axle
   ctx.fillStyle = "#222";
-  ctx.fillRect(-kartW / 2 - 8, -kartH * 0.3, kartW + 16, kartH * 0.18);
+  ctx.fillRect(-kartW / 2 - 6, -kartH * 0.3, kartW + 12, kartH * 0.15);
 
-  // Wheels (rear, visible from behind)
-  const wheelW = kartW * 0.15, wheelH = kartH * 0.5;
+  // Wheels
+  const wheelW = kartW * 0.13, wheelH = kartH * 0.45;
   ctx.fillStyle = "#111";
   ctx.strokeStyle = "#333";
   ctx.lineWidth = 2;
   ctx.beginPath(); ctx.roundRect(-kartW / 2 - wheelW, -kartH * 0.6, wheelW, wheelH, 3); ctx.fill(); ctx.stroke();
   ctx.beginPath(); ctx.roundRect(kartW / 2, -kartH * 0.6, wheelW, wheelH, 3); ctx.fill(); ctx.stroke();
 
-  // Stickman (back view)
-  // Body
+  // Stickman body
   ctx.strokeStyle = "#1f2937";
   ctx.lineWidth = 4;
   ctx.beginPath();
@@ -661,17 +772,17 @@ function drawPlayerKart(cw, ch, color, speed) {
   ctx.lineTo(0, -kartH * 1.3);
   ctx.stroke();
 
-  // Arms (reaching forward to steering wheel)
+  // Arms
   ctx.lineWidth = 3;
   ctx.beginPath();
   ctx.moveTo(0, -kartH * 0.9);
-  ctx.lineTo(-kartW * 0.25, -kartH * 0.7);
+  ctx.lineTo(-kartW * 0.22, -kartH * 0.7);
   ctx.moveTo(0, -kartH * 0.9);
-  ctx.lineTo(kartW * 0.25, -kartH * 0.7);
+  ctx.lineTo(kartW * 0.22, -kartH * 0.7);
   ctx.stroke();
 
-  // Head with helmet
-  const headR = kartW * 0.09;
+  // Head + helmet
+  const headR = kartW * 0.08;
   ctx.fillStyle = color;
   ctx.strokeStyle = "#1f2937";
   ctx.lineWidth = 2;
@@ -682,17 +793,17 @@ function drawPlayerKart(cw, ch, color, speed) {
 
   // Number on back
   ctx.fillStyle = "#fff";
-  ctx.font = `700 ${kartH * 0.25}px 'Azeret Mono', monospace`;
+  ctx.font = `700 ${kartH * 0.22}px 'Azeret Mono', monospace`;
   ctx.textAlign = "center";
   ctx.fillText(myName || "You", 0, -kartH * 0.75);
 
-  // Exhaust particles when moving
+  // Exhaust particles
   if (Math.abs(speed) > 50) {
-    ctx.fillStyle = "rgba(150,150,150,0.4)";
-    for (let i = 0; i < 4; i++) {
-      const px = (Math.random() - 0.5) * kartW * 0.3;
-      const py = Math.random() * 15;
-      const pr = 2 + Math.random() * 4;
+    ctx.fillStyle = "rgba(150,150,150,0.35)";
+    for (let i = 0; i < 3; i++) {
+      const px = (Math.random() - 0.5) * kartW * 0.25;
+      const py = Math.random() * 12;
+      const pr = 2 + Math.random() * 3;
       ctx.beginPath();
       ctx.arc(px, py, pr, 0, Math.PI * 2);
       ctx.fill();
